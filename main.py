@@ -1,77 +1,52 @@
-import cv2
-from util import get_parking_spots_bboxes,empty_or_not
+import os
+import pickle
+
+from skimage.io import imread
+from skimage.transform import resize
 import numpy as np
-import matplotlib.pyplot as plt
-
-mask = '/Users/nannmemeda/Desktop/Parking_detection/mask_1920_1080.png'
-video_path = '/Users/nannmemeda/Desktop/Parking_detection/parking_1920_1080_loop.mp4'
-
-def calc_diff(im1, im2):
-    return np.mean(im1) - np.mean(im2)
-
-mask = cv2.imread(mask, 0)
-
-cap = cv2.VideoCapture(video_path)
-
-connected_components = cv2.connectedComponentsWithStats(mask, 4, cv2.CV_32S)
-
-spots = get_parking_spots_bboxes(connected_components)
-
-spots_status = [None for j in spots]
-diffs = [None for j in spots]
-
-previous_frame = None
-
-frame_nmr = 0
-ret = True
-step = 30
-while ret:
-    ret, frame = cap.read()
-
-    if frame_nmr % step == 0 and previous_frame is not None:
-        for spot_index,spot in enumerate(spots):
-            x1, y1, w, h = spot
-
-            spot_crop = frame[y1:y1 + h, x1:x1 + w, :]
-
-            diffs[spot_index] = calc_diff(spot_crop, previous_frame[y1:y1 + h, x1:x1 + w, :])
-
-        print([diffs[j] for j in np.argsort(diffs)][::-1])
-
-    if frame_nmr % step == 0:
-        if previous_frame is None:
-            arr_ = range(len(spots))
-        else:
-            arr_ = [j for j in np.argsort(diffs) if diffs[j] / np.amax(diffs) > 0.4]
-        for spot_index in arr_:
-            spot = spots[spot_index]
-            x1, y1, w, h = spot
-
-            spot_crop = frame[y1:y1 + h, x1:x1 + w, :]
-
-            spot_status = empty_or_not(spot_crop)
-            spots_status[spot_index] = spot_status
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 
 
-    if frame_nmr % step == 0:
-        previous_frame = frame.copy()
+# Prepare data
+input_dir = '/Users/nannmemeda/Desktop/ImageClassifiction/clf-data'
+categories = ['empty','not_empty']
 
-    for spot_index, spot in enumerate(spots):
-        spot_status = spots_status[spot_index]
-        x1, y1, w, h = spots[spot_index]
-        if spot_status:
-            frame = cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), (0, 255, 0), 2)
-        else:
-            frame = cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), (0, 0, 255), 2)
+data = []
+labels = []
 
-    cv2.rectangle(frame,(80, 20), (550, 80), (0, 0, 0), -1)
-    cv2.putText(frame, 'Available spots: {} / {}'.format(str(sum(spots_status)), str(len(spots_status))), (100, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+for category_idx, category in enumerate(categories):
+    for file in os.listdir(os.path.join(input_dir, category)):
+        img_path = os.path.join(input_dir, category, file)
+        img = imread(img_path)
+        img = resize(img, (15, 15))
+        data.append(img.flatten())
+        labels.append(category_idx)
 
-    cv2.imshow('frame',frame)
-    if cv2.waitKey(25) & 0xFF == ord('q'):
-        break
+data = np.asarray(data)
+labels = np.asarray(labels)
 
-    frame_nmr += 1
+# Train / Test split
+x_train, x_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, shuffle=True, stratify=labels)
 
-cap.release()
-cv2.destroyAllWindows()
+# Train classifier
+classifier = SVC()
+
+parameters = [{'gamma': [0.01, 0.001, 0.0001],'C':[1, 10, 100, 1000]}]
+
+grid_search = GridSearchCV(classifier, parameters)
+
+grid_search.fit(x_train, y_train)
+
+# Test Performance
+best_estimator = grid_search.best_estimator_
+
+y_prediction = best_estimator.predict(x_test)
+
+score = accuracy_score(y_prediction, y_test)
+
+print('{}% of samples were correctly classified'.format(str(score * 100)))
+
+pickle.dump(best_estimator, open('./model.p', 'wb'))
